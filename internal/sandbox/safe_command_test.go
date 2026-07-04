@@ -88,6 +88,26 @@ func TestDetectInteractiveCommandHonorsWindows(t *testing.T) {
 	}
 }
 
+func TestDetectInteractiveCommandWindowsSuggestionsAvoidUnixHead(t *testing.T) {
+	cases := []string{"less foo.txt", "more bar.log", "top", "tail -f app.log"}
+	for _, command := range cases {
+		t.Run(command, func(t *testing.T) {
+			result := DetectInteractiveCommand(command, "windows")
+			if !result.Interactive {
+				t.Fatalf("expected %q to be interactive on windows", command)
+			}
+			sugg := strings.ToLower(result.Suggestion)
+			if strings.Contains(sugg, "head") || strings.Contains(sugg, "ps aux") {
+				t.Fatalf("windows suggestion for %q must not suggest head/ps aux; got %q", command, result.Suggestion)
+			}
+			// Should point at native/read_file or windows-native alternatives.
+			if !strings.Contains(sugg, "read_file") && !strings.Contains(sugg, "tasklist") && !strings.Contains(sugg, "type ") && !strings.Contains(sugg, "powershell") {
+				t.Fatalf("windows suggestion for %q should mention a windows-friendly alternative, got %q", command, result.Suggestion)
+			}
+		})
+	}
+}
+
 func TestDetectInteractiveCommandFindsAcrossSeparators(t *testing.T) {
 	// Interactive commands hidden after a shell operator should still be caught.
 	for _, command := range []string{

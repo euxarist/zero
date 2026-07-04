@@ -197,7 +197,7 @@ func workspaceContext(cwd string) string {
 	b.WriteString("Working directory: " + cwd + "\n")
 	b.WriteString("Operating system: " + runtime.GOOS + "\n")
 	if runtime.GOOS == "windows" {
-		b.WriteString("Shell syntax: Windows cmd.exe syntax for exec_command/bash tools; prefer the workdir/cwd argument instead of cd when changing directories.\n")
+		b.WriteString("Shell syntax: Windows cmd.exe syntax for exec_command/bash tools. To put | & > < etc inside an arg value (gh --jq '.a | b', go test -run 'A|B'), use double quotes around the value: --jq \".a | b\". Single quotes do not protect metachars. Avoid POSIX-only commands (head, tail, ls, cat, grep, ps, ...); prefer workdir/cwd over cd; prefer native tools (list_directory, read_file, grep, glob) over shell for file ops.\n")
 	} else {
 		b.WriteString("Shell syntax: /bin/sh syntax for exec_command/bash tools; prefer the workdir/cwd argument instead of cd when changing directories.\n")
 	}

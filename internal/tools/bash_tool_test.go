@@ -22,7 +22,7 @@ func TestMain(m *testing.M) {
 			// quoted, space-and-slash-containing argument (the same shape as
 			// `python -c "print(15 / 3)"`) survives the shell invocation
 			// intact instead of being truncated/corrupted.
-			if len(os.Args) < 4 {
+			if len(os.Args) != 4 {
 				fmt.Fprintln(os.Stderr, "echo-arg requires exactly one argument")
 				os.Exit(1)
 			}
@@ -151,7 +151,7 @@ func TestDetectShellCommandIssueAllowsWindowsCDSwitch(t *testing.T) {
 	}
 }
 
-func TestDetectShellCommandIssueRequiresActualLSCommand(t *testing.T) {
+func TestDetectShellCommandIssueFlagsWindowsBadCommands(t *testing.T) {
 	for _, command := range []string{
 		`echo false ls -la`,
 		`echo list -items`,
@@ -169,6 +169,30 @@ func TestDetectShellCommandIssueRequiresActualLSCommand(t *testing.T) {
 	} {
 		if issue := detectShellCommandIssue(command, "windows"); issue == nil {
 			t.Fatalf("expected actual ls command to be flagged for %q", command)
+		}
+	}
+
+	// Common Unix filters used for truncation (e.g. gh output) must be caught.
+	for _, command := range []string{
+		`gh pr view 465 | head -200`,
+		`some-cmd | tail -n 10`,
+		`cat file | head -5`,
+		`ps aux | head`,
+	} {
+		if issue := detectShellCommandIssue(command, "windows"); issue == nil {
+			t.Fatalf("expected POSIX filter command to be flagged for %q", command)
+		}
+	}
+
+	// Both primary 'cat file' and trailing '| cat' (common Unix no-op filter) should be flagged on Windows.
+	for _, command := range []string{
+		`cat file.txt`,
+		`cd C:\tmp && cat foo`,
+		`gh pr view 123 | cat`,
+		`some-cmd 2>&1 | cat`,
+	} {
+		if issue := detectShellCommandIssue(command, "windows"); issue == nil {
+			t.Fatalf("expected cat command to be flagged for %q", command)
 		}
 	}
 }
@@ -521,14 +545,14 @@ func TestBashToolBlocksInteractiveCommandThroughSandbox(t *testing.T) {
 	result := NewBashTool(root).(interface {
 		RunWithSandbox(context.Context, map[string]any, *sandbox.Engine) Result
 	}).RunWithSandbox(context.Background(), map[string]any{
-		"command": "less /etc/hosts",
+		"command": "vim /etc/hosts",
 	}, engine)
 
 	if result.Status != StatusError {
 		t.Fatalf("expected error status, got %s: %s", result.Status, result.Output)
 	}
-	if !strings.Contains(result.Output, "interactive") || !strings.Contains(result.Output, "cat") {
-		t.Fatalf("expected pager guard message with cat suggestion, got %q", result.Output)
+	if !strings.Contains(result.Output, "interactive") {
+		t.Fatalf("expected interactive guard message, got %q", result.Output)
 	}
 }
 

@@ -149,11 +149,15 @@ func DetectInteractiveCommand(command string, goos string) InteractiveCommandRes
 		body := strings.ToLower(commandBody(strings.Fields(segment)))
 		for _, seg := range interactiveSegments {
 			if body == seg.match || strings.HasPrefix(body, seg.match+" ") {
+				suggestion := seg.suggestion
+				if goos == "windows" {
+					suggestion = windowsInteractiveSegmentSuggestion(seg.command)
+				}
 				return InteractiveCommandResult{
 					Interactive: true,
 					Command:     seg.command,
 					Reason:      seg.reason,
-					Suggestion:  seg.suggestion,
+					Suggestion:  suggestion,
 				}
 			}
 		}
@@ -186,11 +190,15 @@ func DetectInteractiveCommand(command string, goos string) InteractiveCommandRes
 		if hasNonInteractiveFlag(first, fields) {
 			continue
 		}
+		suggestion := program.suggestion
+		if goos == "windows" {
+			suggestion = windowsInteractiveSuggestion(first)
+		}
 		return InteractiveCommandResult{
 			Interactive: true,
 			Command:     first,
 			Reason:      program.reason,
-			Suggestion:  program.suggestion,
+			Suggestion:  suggestion,
 		}
 	}
 
@@ -603,4 +611,43 @@ func splitShellSegments(command string) []string {
 
 func normalizeWhitespace(value string) string {
 	return strings.Join(strings.Fields(value), " ")
+}
+
+// windowsInteractiveSuggestion returns a Windows-appropriate alternative for
+// programs that would otherwise suggest Unix head/tail/ps in their guidance.
+func windowsInteractiveSuggestion(prog string) string {
+	switch prog {
+	case "less", "more", "most":
+		return "Use the read_file tool, or `type file` from cmd.exe (powershell -NoProfile -Command \"Get-Content -TotalCount N file\" for truncation)."
+	case "top", "htop", "btop":
+		return "Use `tasklist` for a one-shot process snapshot (powershell -NoProfile -Command \"Get-Process | Select -First N\" for truncation)."
+	case "btm":
+		return "Use `tasklist` for a one-shot process snapshot."
+	case "watch":
+		return "Run the underlying command once instead of wrapping it in watch."
+	default:
+		if p, ok := interactivePrograms[prog]; ok {
+			return p.suggestion
+		}
+		return "Use native Zero tools or cmd.exe / PowerShell equivalents."
+	}
+}
+
+// windowsInteractiveSegmentSuggestion returns Windows guidance for multi-word
+// interactive segments (e.g. tail -f) that would otherwise suggest Unix tail.
+func windowsInteractiveSegmentSuggestion(cmd string) string {
+	switch cmd {
+	case "tail -f", "tail --follow":
+		return "Use `powershell -NoProfile -Command \"Get-Content -Path file -Tail N -Wait\"` (or poll via read_file)."
+	case "journalctl -f":
+		return "Use a bounded log read or Windows event log equivalents."
+	case "kubectl logs -f":
+		return "Drop -f and use `kubectl logs --tail=N` or poll."
+	case "docker logs -f":
+		return "Drop -f and use `docker logs --tail N` or poll."
+	case "docker attach":
+		return "Use `docker exec <id> <command>` for one-shot execution."
+	default:
+		return "Run a bounded, non-interactive form of the command."
+	}
 }
