@@ -32,7 +32,8 @@ var (
 	windowsPosixUtilityPattern = regexp.MustCompile(`(?i)(^|[&|;]\s*)(head|tail|grep|wc|awk|sed|cut|xargs|tr)(?:\s+|$)`)
 
 	// Broader pattern for additional utilities we want to discourage on Windows.
-	windowsPOSIXCommandPattern = regexp.MustCompile(`(?i)(^|[&|;]\s*)(head|tail|ls|ps|grep|cat|awk|sed|sort|uniq|wc|cut|tr|less|top|htop|btop|watch)\b`)
+	// Uses whitespace/end (not \b) to avoid matching things like tail-log.sh.
+	windowsPOSIXCommandPattern = regexp.MustCompile(`(?i)(^|[&|;]\s*)(head|tail|ls|ps|grep|cat|awk|sed|sort|uniq|wc|cut|tr|less|top|htop|btop|watch)(?:\s+|$)`)
 )
 
 func detectShellRuntime(goos string) shellRuntime {
@@ -74,7 +75,7 @@ func detectShellCommandIssue(command string, goos string) *shellIssue {
 		return &shellIssue{
 			Kind:       "windows_shell_syntax",
 			Message:    "Command looks like POSIX/Bash syntax, but Zero runs bash tool commands through Windows cmd.exe on this host.",
-			Suggestion: "Use Windows cmd.exe syntax. For args containing | (e.g. gh --jq or go test -run), use double quotes around the value: --jq \".foo | bar\". Single quotes do not protect |. Prefer --jq/-q for gh, PowerShell Select-Object for limits, or native tools (grep, read_file, etc.). Avoid head/cat etc.",
+			Suggestion: "Use Windows cmd.exe syntax (e.g. dir instead of ls, type instead of cat, findstr instead of grep). For args containing | (e.g. gh --jq or go test -run), use double quotes: --jq \".foo | bar\". Use the cwd argument instead of cd, or native tools such as list_directory, read_file, grep, and glob.",
 		}
 	}
 	return nil
