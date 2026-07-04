@@ -20,11 +20,19 @@ type shellIssue struct {
 var (
 	windowsBashStyleCDPattern = regexp.MustCompile(`(?i)(^|[&|;]\s*)cd\s+/(?:[a-ce-z0-9_./~-]|d[a-z0-9_./~-])[a-z0-9_./~-]*`)
 	windowsLSCommandPattern   = regexp.MustCompile(`(?i)(^|[&|;]\s*)ls\b(?:\s+|$)`)
+
+	windowsCatPrimaryPattern = regexp.MustCompile(`(?i)(^|[&|;]\s*)cat\b\s+\S`)
+
 	// windowsPosixUtilityPattern catches the other common POSIX coreutils/grep
 	// family commands cmd.exe has no equivalent for (unlike `dir`/`findstr`,
 	// which sound similar enough that a model might reach for the POSIX name
 	// instead) — most often seen piped in, e.g. `git log ... | head`.
+	// Uses whitespace/end boundary (not \b) to avoid false-positive on
+	// filenames like tail-log.sh.
 	windowsPosixUtilityPattern = regexp.MustCompile(`(?i)(^|[&|;]\s*)(head|tail|grep|wc|awk|sed|cut|xargs|tr)(?:\s+|$)`)
+
+	// Broader pattern for additional utilities we want to discourage on Windows.
+	windowsPOSIXCommandPattern = regexp.MustCompile(`(?i)(^|[&|;]\s*)(head|tail|ls|ps|grep|cat|awk|sed|sort|uniq|wc|cut|tr|less|top|htop|btop|watch)\b`)
 )
 
 func detectShellRuntime(goos string) shellRuntime {
@@ -37,7 +45,7 @@ func detectShellRuntime(goos string) shellRuntime {
 func shellGuidanceForGOOS(goos string) string {
 	runtime := detectShellRuntime(goos)
 	if goos == "windows" {
-		return "Uses " + runtime.Syntax + " syntax on Windows; prefer cwd over cd when changing directories."
+		return "Uses " + runtime.Syntax + " syntax on Windows. When an argument value must contain literal | & > < ^ or other metachars (e.g. gh --jq '.foo | bar' or go test -run 'TestA|TestB'), wrap that argument in double quotes so cmd.exe treats it as one token: gh --jq \".foo | bar\" or go test -run \"TestA|TestB\". Single quotes do NOT protect metachars in cmd.exe. Avoid POSIX-only commands such as head, tail, ls, cat, grep, ps (use dir, type, findstr or native Zero tools). Prefer the cwd argument over cd. Prefer list_directory, read_file, grep, glob over shell for file tasks."
 	}
 	guidance := "Uses " + runtime.Syntax + " syntax."
 	if goos == "darwin" {
@@ -54,19 +62,19 @@ func detectShellCommandIssue(command string, goos string) *shellIssue {
 		return nil
 	}
 	trimmed := strings.TrimSpace(command)
+	lower := strings.ToLower(trimmed)
 	if windowsBashStyleCDPattern.MatchString(trimmed) ||
-		windowsLSCommandPattern.MatchString(trimmed) {
+		windowsLSCommandPattern.MatchString(trimmed) ||
+		windowsCatPrimaryPattern.MatchString(trimmed) ||
+		windowsPOSIXCommandPattern.MatchString(trimmed) ||
+		windowsPosixUtilityPattern.MatchString(trimmed) ||
+		strings.Contains(lower, "| cat") ||
+		strings.Contains(lower, "| head") ||
+		strings.Contains(lower, "| tail") {
 		return &shellIssue{
 			Kind:       "windows_shell_syntax",
 			Message:    "Command looks like POSIX/Bash syntax, but Zero runs bash tool commands through Windows cmd.exe on this host.",
-			Suggestion: "Use the cwd argument instead of cd, use Windows cmd.exe syntax, or use native tools such as list_directory, read_file, grep, and glob.",
-		}
-	}
-	if windowsPosixUtilityPattern.MatchString(trimmed) {
-		return &shellIssue{
-			Kind:       "windows_shell_syntax",
-			Message:    "Command uses a POSIX utility (head/tail/grep/wc/awk/sed/cut/xargs/tr) that Windows cmd.exe does not have.",
-			Suggestion: "Use cmd.exe equivalents (e.g. `findstr` for grep, `more` to page output) or Zero's native tools (grep, read_file with offset/limit) instead of piping to a POSIX utility.",
+			Suggestion: "Use Windows cmd.exe syntax. For args containing | (e.g. gh --jq or go test -run), use double quotes around the value: --jq \".foo | bar\". Single quotes do not protect |. Prefer --jq/-q for gh, PowerShell Select-Object for limits, or native tools (grep, read_file, etc.). Avoid head/cat etc.",
 		}
 	}
 	return nil
@@ -82,7 +90,7 @@ func detectShellOutputIssue(command string, output string, goos string) *shellIs
 		return &shellIssue{
 			Kind:       "windows_shell_syntax",
 			Message:    "Windows cmd.exe rejected the command syntax.",
-			Suggestion: "Translate the command to Windows cmd.exe syntax, set the bash tool cwd argument instead of running cd, or prefer native Zero tools for file inspection.",
+			Suggestion: "Use Windows cmd.exe syntax. Quote args with | using double quotes (e.g. --jq \".a | b\"). Avoid | cat / | head; use --jq or PowerShell Select-Object -First N instead. Prefer native tools.",
 		}
 	}
 	return nil
