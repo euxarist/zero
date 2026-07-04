@@ -66,7 +66,7 @@ func detectShellCommandIssue(command string, goos string) *shellIssue {
 	if windowsPosixUtilityPattern.MatchString(trimmed) {
 		return &shellIssue{
 			Kind:       "windows_shell_syntax",
-			Message:    "Command uses a POSIX utility (head/tail/grep/wc/awk/sed/cut/xargs/tr) that Windows cmd.exe does not have.",
+			Message:    "Command uses a POSIX utility (head/tail/grep/wc/awk/sed/cut/xargs/tr/cat) that Windows cmd.exe does not have.",
 			Suggestion: "Use cmd.exe equivalents (e.g. `findstr` for grep, `type` for cat, `more` to page output) or Zero's native tools (grep, read_file with offset/limit) instead of piping to a POSIX utility.",
 		}
 	}

@@ -85,7 +85,8 @@ func readClipboardImageWindows() ([]byte, error) {
 	scriptFile.Close()
 	defer os.Remove(scriptPath)
 
-	script := `Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $img = [System.Windows.Forms.Clipboard]::GetImage(); if ($img -ne $null) { $img.Save('` + tmpPath + `', [System.Drawing.Imaging.ImageFormat]::Png) }`
+	escapedTmpPath := strings.ReplaceAll(tmpPath, "'", "''")
+	script := `Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $img = [System.Windows.Forms.Clipboard]::GetImage(); if ($img -ne $null) { $img.Save('` + escapedTmpPath + `', [System.Drawing.Imaging.ImageFormat]::Png) }`
 	if err := os.WriteFile(scriptPath, []byte(script), 0644); err != nil {
 		return nil, nil
 	}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
@@ -395,14 +396,14 @@ func (a *Agent) persistTurn(sess *acpSession, user, assistant string) {
 		}); err != nil {
 			// best-effort; log at least so we notice history loss
 			// (real fix would surface to transcript / user)
-			fmt.Printf("warning: failed to persist user turn: %v\n", err)
+			fmt.Fprintf(os.Stderr, "warning: failed to persist user turn: %v\n", err)
 		}
 		if assistant != "" {
 			if _, err := a.deps.Store.AppendEvent(sess.id, sessions.AppendEventInput{
 				Type:    sessions.EventMessage,
 				Payload: map[string]any{"role": "assistant", "content": assistant},
 			}); err != nil {
-				fmt.Printf("warning: failed to persist assistant turn: %v\n", err)
+				fmt.Fprintf(os.Stderr, "warning: failed to persist assistant turn: %v\n", err)
 			}
 		}
 	}
