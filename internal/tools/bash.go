@@ -18,6 +18,8 @@ import (
 const defaultBashTimeoutMS = 120000
 const maxBashTimeoutMS = 600000
 
+const maxBashOutputBytes = 16 * 1024 * 1024 // 16 MiB - prevent OOM on large command output
+
 type bashTool struct {
 	baseTool
 	workspaceRoot string
@@ -140,6 +142,14 @@ func (tool bashTool) run(ctx context.Context, args map[string]any, engine *zeroS
 	exitCode := commandExitCode(err)
 	meta["exit_code"] = strconv.Itoa(exitCode)
 	stderrText := appendSandboxBlocks(stderr.String(), monitor.Stop())
+
+	// Cap output to prevent OOM on very large command results (e.g. cat huge file, large gh output).
+	if stdout.Len() > maxBashOutputBytes {
+		stdout.Truncate(maxBashOutputBytes)
+	}
+	if stderr.Len() > maxBashOutputBytes {
+		stderr.Truncate(maxBashOutputBytes)
+	}
 
 	if errors.Is(commandCtx.Err(), context.DeadlineExceeded) {
 		return Result{

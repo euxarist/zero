@@ -75,8 +75,21 @@ func readClipboardImageWindows() ([]byte, error) {
 	tmpPath := tmpFile.Name()
 	tmpFile.Close()
 	defer os.Remove(tmpPath)
+
+	// Write the script to a temp .ps1 to avoid any quoting/concat issues in -Command
+	scriptFile, err := os.CreateTemp("", "zero-clipboard-*.ps1")
+	if err != nil {
+		return nil, nil
+	}
+	scriptPath := scriptFile.Name()
+	scriptFile.Close()
+	defer os.Remove(scriptPath)
+
 	script := `Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $img = [System.Windows.Forms.Clipboard]::GetImage(); if ($img -ne $null) { $img.Save('` + tmpPath + `', [System.Drawing.Imaging.ImageFormat]::Png) }`
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", script)
+	if err := os.WriteFile(scriptPath, []byte(script), 0644); err != nil {
+		return nil, nil
+	}
+	cmd := exec.Command("powershell", "-NoProfile", "-File", scriptPath)
 	if err := cmd.Run(); err != nil {
 		return nil, nil
 	}
