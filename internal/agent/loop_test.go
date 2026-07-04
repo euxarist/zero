@@ -2907,7 +2907,7 @@ func TestBuildSystemPromptInjectsHostShellContext(t *testing.T) {
 		t.Fatalf("expected operating system in environment block, got %q", prompt)
 	}
 	if runtime.GOOS == "windows" {
-		if !strings.Contains(prompt, "Windows cmd.exe syntax") || !strings.Contains(prompt, "cwd argument") {
+		if !strings.Contains(prompt, "Windows cmd.exe syntax") || !strings.Contains(prompt, "use double quotes around the value") {
 			t.Fatalf("expected Windows cmd.exe shell guidance in prompt, got %q", prompt)
 		}
 	} else if !strings.Contains(prompt, "/bin/sh syntax") {
