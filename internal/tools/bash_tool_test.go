@@ -17,8 +17,6 @@ import (
 
 func TestMain(m *testing.M) {
 	if len(os.Args) >= 3 && os.Args[1] == "--zero-bash-helper" {
-<<<<<<< HEAD
-=======
 		if os.Args[2] == "echo-arg" {
 			// Echoes back exactly the one argument it received, to verify a
 			// quoted, space-and-slash-containing argument (the same shape as
@@ -31,7 +29,6 @@ func TestMain(m *testing.M) {
 			fmt.Println(os.Args[3])
 			return
 		}
->>>>>>> 6d5d4f1 (Resolve conflicts from stash pop after rebase onto main (integrate POSIX flagging with local guidance/quoting improvements))
 		runBashToolHelper(os.Args[2])
 		return
 	}

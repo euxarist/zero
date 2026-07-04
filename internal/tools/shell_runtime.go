@@ -21,18 +21,11 @@ var (
 	windowsBashStyleCDPattern = regexp.MustCompile(`(?i)(^|[&|;]\s*)cd\s+/(?:[a-ce-z0-9_./~-]|d[a-z0-9_./~-])[a-z0-9_./~-]*`)
 	windowsLSCommandPattern   = regexp.MustCompile(`(?i)(^|[&|;]\s*)ls\b(?:\s+|$)`)
 
-	windowsCatPrimaryPattern = regexp.MustCompile(`(?i)(^|[&|;]\s*)cat\b\s+\S`)
-
 	// windowsPosixUtilityPattern catches the other common POSIX coreutils/grep
 	// family commands cmd.exe has no equivalent for (unlike `dir`/`findstr`,
 	// which sound similar enough that a model might reach for the POSIX name
 	// instead) — most often seen piped in, e.g. `git log ... | head`.
-	// Uses whitespace/end boundary (not \b) to avoid false-positive on
-	// filenames like tail-log.sh.
-	windowsPosixUtilityPattern = regexp.MustCompile(`(?i)(^|[&|;]\s*)(head|tail|grep|wc|awk|sed|cut|xargs|tr)(?:\s+|$)`)
-
-	// Broader pattern for additional utilities we want to discourage on Windows.
-	windowsPOSIXCommandPattern = regexp.MustCompile(`(?i)(^|[&|;]\s*)(head|tail|ls|ps|grep|cat|awk|sed|sort|uniq|wc|cut|tr|less|top|htop|btop|watch)\b`)
+	windowsPosixUtilityPattern = regexp.MustCompile(`(?i)(^|[&|;]\s*)(head|tail|grep|wc|awk|sed|cut|xargs|tr|cat)(?:\s+|$)`)
 )
 
 func detectShellRuntime(goos string) shellRuntime {
@@ -62,19 +55,19 @@ func detectShellCommandIssue(command string, goos string) *shellIssue {
 		return nil
 	}
 	trimmed := strings.TrimSpace(command)
-	lower := strings.ToLower(trimmed)
 	if windowsBashStyleCDPattern.MatchString(trimmed) ||
-		windowsLSCommandPattern.MatchString(trimmed) ||
-		windowsCatPrimaryPattern.MatchString(trimmed) ||
-		windowsPOSIXCommandPattern.MatchString(trimmed) ||
-		windowsPosixUtilityPattern.MatchString(trimmed) ||
-		strings.Contains(lower, "| cat") ||
-		strings.Contains(lower, "| head") ||
-		strings.Contains(lower, "| tail") {
+		windowsLSCommandPattern.MatchString(trimmed) {
 		return &shellIssue{
 			Kind:       "windows_shell_syntax",
 			Message:    "Command looks like POSIX/Bash syntax, but Zero runs bash tool commands through Windows cmd.exe on this host.",
-			Suggestion: "Use Windows cmd.exe syntax. For args containing | (e.g. gh --jq or go test -run), use double quotes around the value: --jq \".foo | bar\". Single quotes do not protect |. Prefer --jq/-q for gh, PowerShell Select-Object for limits, or native tools (grep, read_file, etc.). Avoid head/cat etc.",
+			Suggestion: "Use the cwd argument instead of cd, use Windows cmd.exe syntax, or use native tools such as list_directory, read_file, grep, and glob.",
+		}
+	}
+	if windowsPosixUtilityPattern.MatchString(trimmed) {
+		return &shellIssue{
+			Kind:       "windows_shell_syntax",
+			Message:    "Command uses a POSIX utility (head/tail/grep/wc/awk/sed/cut/xargs/tr) that Windows cmd.exe does not have.",
+			Suggestion: "Use cmd.exe equivalents (e.g. `findstr` for grep, `type` for cat, `more` to page output) or Zero's native tools (grep, read_file with offset/limit) instead of piping to a POSIX utility.",
 		}
 	}
 	return nil
