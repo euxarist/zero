@@ -1221,6 +1221,10 @@ func (m model) updateModel(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !keyIs(msg, tea.KeyEnter) {
 			m.lastCharTime = now
 		}
+		// Show the caret immediately: waiting for the next blink tick would leave a
+		// keystroke rendered caretless for up to a full tick if it lands in the
+		// hidden phase.
+		m.composerCursorVisible = true
 		if m.setup.visible {
 			return m.handleSetupKey(msg)
 		}
@@ -1889,12 +1893,17 @@ func (m model) updateModel(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case tea.FocusMsg:
 		m.terminalFocused = true
+		// Sync the caret with focus immediately rather than waiting for the next
+		// blink tick, which could leave it hidden for up to a full tick.
+		m.composerCursorVisible = true
 		if m.notifier != nil {
 			m.notifier.SetFocused(true)
 		}
 		return m, nil
 	case tea.BlurMsg:
 		m.terminalFocused = false
+		// Mirror of FocusMsg above: hide the caret in the same update.
+		m.composerCursorVisible = false
 		if m.notifier != nil {
 			m.notifier.SetFocused(false)
 		}
@@ -3499,7 +3508,7 @@ func (m model) composerLine(width int) string {
 	}
 	if argumentHint != "" {
 		input.SetWidth(0)
-		return fitStyledLine(commandArgumentHintComposerLine(input, argumentHint), width)
+		return fitStyledLine(commandArgumentHintComposerLine(input, argumentHint, m.composerCursorVisible), width)
 	}
 	previews := validComposerPastePreviews(state, m.composerPastePreviews)
 	displayState := composerDisplayStateForPastePreviews(state, previews)
@@ -3775,16 +3784,22 @@ func composerCursorForVisualColumn(state composerState, segment composerVisualLi
 	return segment.end
 }
 
-func commandArgumentHintComposerLine(input textinput.Model, argumentHint string) string {
+func commandArgumentHintComposerLine(input textinput.Model, argumentHint string, cursorVisible bool) string {
 	hintRunes := []rune(argumentHint)
 	if len(hintRunes) == 0 {
 		return input.View()
 	}
 	displayValue := strings.TrimRightFunc(input.Value(), unicode.IsSpace)
+	// The caret sits on the hint's first rune; it follows the same blink/focus
+	// visibility state as the regular composer caret.
+	firstHintCell := zeroTheme.faint.Render(string(hintRunes[0]))
+	if cursorVisible {
+		firstHintCell = composerCursor(firstHintCell)
+	}
 	return zeroTheme.userPrompt.Render(input.Prompt) +
 		zeroTheme.ink.Inline(true).Render(displayValue) +
 		zeroTheme.faint.Render(" ") +
-		composerCursor(zeroTheme.faint.Render(string(hintRunes[0]))) +
+		firstHintCell +
 		zeroTheme.faint.Render(string(hintRunes[1:]))
 }
 

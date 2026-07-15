@@ -2739,6 +2739,56 @@ func TestComposerBlinkTogglesWhenIdleAndFocused(t *testing.T) {
 	}
 }
 
+func TestComposerCursorShowsImmediatelyOnKeypress(t *testing.T) {
+	m := newModel(context.Background(), Options{})
+	m.composerCursorVisible = false // an idle blink tick left the caret hidden
+
+	m = typeRunes(t, m, "a")
+	if !m.composerCursorVisible {
+		t.Fatal("expected keypress to show the caret in the same update, not on the next blink tick")
+	}
+}
+
+func TestComposerCursorSyncsImmediatelyOnFocusChange(t *testing.T) {
+	m := model{terminalFocused: true, composerCursorVisible: true}
+
+	updated, _ := m.Update(tea.BlurMsg{})
+	m = updated.(model)
+	if m.composerCursorVisible {
+		t.Fatal("expected blur to hide the caret in the same update, not on the next blink tick")
+	}
+
+	updated, _ = m.Update(tea.FocusMsg{})
+	m = updated.(model)
+	if !m.composerCursorVisible {
+		t.Fatal("expected focus to show the caret in the same update, not on the next blink tick")
+	}
+}
+
+func TestComposerArgumentHintCursorFollowsVisibility(t *testing.T) {
+	m := newModel(context.Background(), Options{})
+	m = typeRunes(t, m, "/search ") // /search has a required <query> argument, so the hint line renders
+
+	m.composerCursorVisible = true
+	visible := m.composerLine(80)
+	m.composerCursorVisible = false
+	hidden := m.composerLine(80)
+
+	caret := composerCursor(zeroTheme.faint.Render("["))
+	if !strings.Contains(visible, caret) {
+		t.Fatalf("expected caret on the hint's first rune while visible, got %q", visible)
+	}
+	if strings.Contains(hidden, caret) {
+		t.Fatalf("expected no caret on the hint while hidden, got %q", hidden)
+	}
+	if !strings.Contains(hidden, zeroTheme.faint.Render("[")) {
+		t.Fatalf("expected the hint text to still render while the caret is hidden, got %q", hidden)
+	}
+	if visible == hidden {
+		t.Fatal("expected the hint line to differ between caret visible and hidden")
+	}
+}
+
 func TestScrimViewportLine(t *testing.T) {
 	// Blank lines are left untouched (no scrim).
 	if got := scrimViewportLine("   ", 10); got != "   " {
