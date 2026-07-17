@@ -185,7 +185,11 @@ func Run(ctx context.Context, prompt string, provider Provider, options Options)
 	result = Result{Messages: copyMessages(messages)}
 	dispatchSessionStart(ctx, options)
 	defer func() {
-		dispatchSessionEnd(ctx, options, result, err)
+		// Use a context detached from ctx's cancellation: on Esc/Ctrl+C the run
+		// context is already canceled by the time this defer runs, and a canceled
+		// parent would make Hooks.Dispatch's context.WithTimeout derive an
+		// already-expired context, so the sessionEnd hook would never actually run.
+		dispatchSessionEnd(context.WithoutCancel(ctx), options, result, err)
 	}()
 	for turn := 0; turn < maxTurns; turn++ {
 		result.Turns = turn + 1
@@ -212,6 +216,26 @@ func Run(ctx context.Context, prompt string, provider Provider, options Options)
 		toolPartitionSpan := options.Trace.Span(trace.SpanToolPartition)
 		exposed, _ := partitionToolsCached(registry, permissionMode, options, loaded, toolDefCache)
 		toolPartitionSpan.End()
+
+		// Prompt-prefix fingerprint: hash the seven cacheable sub-components
+		// of this turn's request (system prompt sections, project context,
+		// skills, partitioned tool list, tool schemas) and emit one trace
+		// event. Stable across turns => cacheable. Drift in any sub-hash
+		// names the sub-component that broke the cache for this turn. The
+		// computation is pure and cheap (seven SHA-256s of small strings)
+		// and is a no-op when tracing is off.
+		if options.Trace != nil {
+			fp := ComputePrefixFingerprint(options, exposed)
+			options.Trace.EmitPrefixHash(trace.PrefixHash{
+				BaseInstructionsHash:   fp.BaseInstructionsHash,
+				ConfirmationPolicyHash: fp.ConfirmationPolicyHash,
+				ProjectContextHash:     fp.ProjectContextHash,
+				SkillsHash:             fp.SkillsHash,
+				ToolsHash:              fp.ToolsHash,
+				SchemaHash:             fp.SchemaHash,
+				CompletePrefixHash:     fp.CompletePrefixHash,
+			})
+		}
 
 		// PROACTIVE compaction: if the history is approaching the model's
 		// context window, summarize the oldest middle before building the
