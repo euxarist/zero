@@ -210,15 +210,14 @@ func NewStore(options StoreOptions) (*Store, error) {
 			kr = osKeyring
 		}
 		// Serialize the keyring's read-modify-write across processes with a lock
-		// file beside where the file backend would live. Cross-process exclusion
-		// must not silently disappear when no config location resolves (withLock
-		// would be a no-op and a concurrent save could delete another process's
-		// newly written entry), so fall back to a per-user location that always
-		// exists, rather than to in-process serialization only.
-		lockPath := keyringFallbackLockPath()
-		if storePath, perr := ResolveStorePath(options.Env); perr == nil {
-			lockPath = filepath.Join(filepath.Dir(storePath), "oauth-keyring.lockfile")
-		}
+		// file keyed off the keyring identity itself (service + index account),
+		// never off the file-backend's path config: two processes with different
+		// ZERO_OAUTH_TOKENS_PATH / XDG_CONFIG_HOME roots but pointed at the SAME
+		// OS keyring entry (the service/account is fixed per binary, not per
+		// config root) must still serialize against each other, or they can race
+		// a read-modify-write on the shared keyring index and silently drop one
+		// process's token write.
+		lockPath := keyringLockPath(keyringService, keyringIndexAccount)
 		return &Store{blob: keyringBlob{kr: kr, service: keyringService, legacyAccount: keyringLegacyAccount, indexAccount: keyringIndexAccount, lockPath: lockPath}, now: now}, nil
 	default:
 		return nil, fmt.Errorf("oauth: unknown storage %q (want \"file\", \"encrypted-file\", or \"keyring\")", storage)
@@ -244,28 +243,55 @@ func resolveStoreFilePath(options StoreOptions) (string, error) {
 	return filepath.Clean(filePath), nil
 }
 
-// keyringFallbackLockPath returns a per-user location for the keyring lock when
-// no config location resolves. A single shared ${TMPDIR}/zero-oauth-keyring.lockfile
-// let any other account on a multi-user host pre-create or keep refreshing the
-// victim's lock and time out their Load/Status/Save/Delete, even though each user
-// has a separate OS keychain. Prefer the per-user OS cache directory (created
-// 0700 by acquireFileLock); only if that cannot be resolved fall back to a temp
-// file scoped by uid so two different users never collide on one path.
-func keyringFallbackLockPath() string {
+// keyringLockPath returns the cross-process lock file location for the
+// keyring backend's read-modify-write, derived from the keyring identity
+// itself (the service/account the index is stored under) rather than from
+// the unrelated file-backend path config (ZERO_OAUTH_TOKENS_PATH /
+// XDG_CONFIG_HOME): the file backend's location has nothing to do with which
+// OS keyring entry a process is about to read-modify-write, so a lock keyed
+// off it let two processes with different config roots but the SAME keyring
+// entry race the shared index and silently drop one process's token write.
+// A single shared ${TMPDIR}/zero-oauth-keyring.lockfile would also let any
+// other account on a multi-user host pre-create or keep refreshing the
+// victim's lock and time out their Load/Status/Save/Delete, even though each
+// user has a separate OS keychain, so this prefers the per-user OS cache
+// directory (created 0700 by acquireFileLock); only if that cannot be
+// resolved does it fall back to a temp file scoped by uid so two different
+// users never collide on one path.
+func keyringLockPath(service, account string) string {
+	name := keyringLockFileName(service, account)
 	if dir, err := os.UserCacheDir(); err == nil && strings.TrimSpace(dir) != "" {
-		return filepath.Join(dir, "zero", "oauth-keyring.lockfile")
+		return filepath.Join(dir, "zero", name)
 	}
-	return filepath.Join(os.TempDir(), keyringTempLockName())
+	return filepath.Join(os.TempDir(), keyringTempLockName(service, account))
+}
+
+// keyringLockFileName names the lock file after the keyring identity it
+// guards, so distinct (service, account) pairs never share a lock and the
+// same pair always resolves to the same lock regardless of caller config.
+func keyringLockFileName(service, account string) string {
+	return fmt.Sprintf("oauth-keyring-%s-%s.lockfile", sanitizeLockComponent(service), sanitizeLockComponent(account))
+}
+
+// lockComponentSafe keeps a service/account string safe as one path segment:
+// alphanumerics, dot, underscore, and hyphen pass through; anything else
+// (a path separator, especially) is replaced so a crafted identity can never
+// escape the lock directory.
+var lockComponentSafe = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
+
+func sanitizeLockComponent(s string) string {
+	return lockComponentSafe.ReplaceAllString(s, "_")
 }
 
 // keyringTempLockName names the last-resort temp lock file, scoping it by uid so
 // concurrently running different users do not share one path. os.Getuid returns
 // -1 where uids do not apply (Windows), where os.TempDir is already per-user.
-func keyringTempLockName() string {
+func keyringTempLockName(service, account string) string {
+	name := keyringLockFileName(service, account)
 	if uid := os.Getuid(); uid >= 0 {
-		return fmt.Sprintf("zero-oauth-keyring-%d.lockfile", uid)
+		return fmt.Sprintf("zero-%d-%s", uid, name)
 	}
-	return "zero-oauth-keyring.lockfile"
+	return "zero-" + name
 }
 
 // FilePath returns the resolved token store location (a path for the file
@@ -553,7 +579,15 @@ func (b keyringBlob) read() ([]byte, bool, error) {
 			// gone) skip rather than fail the whole read, since the next
 			// Save/Delete will reconcile the index.
 			if !legacyLoaded {
-				legacyTokens = b.readLegacyTokens()
+				// A best-effort recovery source for a read: a transient failure
+				// here must not fail the whole Load/Status, only skip recovering
+				// this particular desynced key. The next Save/Delete will
+				// reconcile it once the legacy blob is legible again (and,
+				// unlike here, will refuse to delete the legacy blob until it
+				// can actually read it — see write()).
+				if lt, lerr := b.readLegacyTokens(); lerr == nil {
+					legacyTokens = lt
+				}
 				legacyLoaded = true
 			}
 			if token, has := legacyTokens[key]; has {
@@ -593,20 +627,28 @@ func (b keyringBlob) readLegacy() ([]byte, bool, error) {
 	return data, true, nil
 }
 
-// readLegacyTokens returns the tokens held in the legacy combined entry, or an
-// empty map when there is no readable legacy blob. It is a best-effort recovery
-// source (read() falls back to it, write() reconciles against it), so a missing
-// or malformed legacy entry is reported as "no tokens" rather than a hard error.
-func (b keyringBlob) readLegacyTokens() map[string]Token {
+// readLegacyTokens returns the tokens held in the legacy combined entry. A
+// nil map with a nil error means the entry genuinely does not exist (readLegacy
+// returned ok=false, err=nil) — the one case callers may treat as "no tokens"
+// and proceed. Any other failure (a transient keyring read error, undecodable
+// base64, invalid JSON) is returned as err and must NOT be collapsed into "no
+// tokens": write() deletes the legacy blob once it believes reconciliation is
+// complete, so mistaking a transient read failure for an empty blob would
+// delete a still-unread, still-live credential that belongs to an older,
+// still-installed zero binary.
+func (b keyringBlob) readLegacyTokens() (map[string]Token, error) {
 	data, ok, err := b.readLegacy()
-	if err != nil || !ok {
-		return nil
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
 	}
 	var legacyState storeFile
-	if json.Unmarshal(data, &legacyState) != nil {
-		return nil
+	if err := json.Unmarshal(data, &legacyState); err != nil {
+		return nil, fmt.Errorf("oauth: invalid legacy keyring token blob: %w", err)
 	}
-	return legacyState.Tokens
+	return legacyState.Tokens, nil
 }
 
 // legacyIsFresher reports whether the legacy copy of an already-indexed key
@@ -660,7 +702,17 @@ func (b keyringBlob) write(data []byte) error {
 	//   - a key that was in the prior index but is absent from this write was
 	//     deliberately removed (a logout); it is left removed, not resurrected.
 	if indexExisted {
-		for key, legacyToken := range b.readLegacyTokens() {
+		// Unlike read()'s best-effort fallback, a failure here must abort the
+		// whole write rather than proceed as though the legacy blob were empty:
+		// step 4 below deletes it, and a transient read error (the legacy blob
+		// genuinely exists but couldn't be read right now) must never be
+		// mistaken for "nothing to reconcile," or a still-live credential from
+		// an older, still-installed zero binary is destroyed irrecoverably.
+		legacyTokens, err := b.readLegacyTokens()
+		if err != nil {
+			return fmt.Errorf("oauth: read legacy keyring token blob for reconciliation: %w", err)
+		}
+		for key, legacyToken := range legacyTokens {
 			if ValidateKey(key) != nil {
 				continue
 			}
@@ -809,7 +861,7 @@ func (b keyringBlob) readKeyIndex() ([]string, bool, int, error) {
 		if len(keys) > maxKeyringIndexKeys {
 			return nil, false, 0, errKeyringIndexTooManyKeys(len(keys))
 		}
-		return keys, true, 1, nil
+		return dedupeValidKeys(keys), true, 1, nil
 	}
 	var header keyIndexHeader
 	if err := json.Unmarshal(raw, &header); err != nil {
@@ -850,7 +902,34 @@ func (b keyringBlob) readKeyIndex() ([]string, bool, int, error) {
 		}
 		keys = append(keys, more...)
 	}
-	return keys, true, header.Chunks, nil
+	return dedupeValidKeys(keys), true, header.Chunks, nil
+}
+
+// dedupeValidKeys drops duplicates and malformed entries from a decoded
+// index's key list before it is fanned out into one keyring lookup per key by
+// read()/write() (via Load/Status/Save/Delete). maxKeyringIndexKeys already
+// bounds the raw decode, but that bound does nothing against a corrupted or
+// adversarially crafted index that packs its budget with repeats of the same
+// key (or garbage that was never a real ValidateKey-shaped entry): every
+// duplicate or malformed key would otherwise still cost its own blocking
+// keyring lookup (up to the 10s command timeout) while the store lock is
+// held, reintroducing the fan-out DoS the index cap was meant to close.
+// Order is preserved (first occurrence wins) so callers that sort or display
+// keys see stable results.
+func dedupeValidKeys(keys []string) []string {
+	seen := make(map[string]bool, len(keys))
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if seen[key] {
+			continue
+		}
+		if ValidateKey(key) != nil {
+			continue
+		}
+		seen[key] = true
+		out = append(out, key)
+	}
+	return out
 }
 
 // writeKeyIndex persists keys as a chunked index and reports how many chunk
