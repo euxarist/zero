@@ -927,12 +927,18 @@ func runChangesPR(args []string, stdout io.Writer, stderr io.Writer, deps appDep
 		return writeExecUsageError(stderr, err.Error())
 	}
 
-	_, _, remoteForCheck, err := deps.isDefaultBranch(context.Background(), zerogit.DefaultBranchOptions{Cwd: workspaceRoot, Remote: options.remote})
-	if err != nil {
-		return writeExecUsageError(stderr, err.Error())
+	// For `changes pr --yes`, skip the default-branch preflight:
+	// --yes already opts in to pushing/PRing against a default branch,
+	// so its own guard is sufficient. The preflight only adds value
+	// for interactive use where the user can be told upfront.
+	targetRemote := firstNonEmptyString(options.remote, "")
+	if !options.yes {
+		_, _, remoteForCheck, preflightErr := deps.isDefaultBranch(context.Background(), zerogit.DefaultBranchOptions{Cwd: workspaceRoot, Remote: options.remote})
+		if preflightErr != nil {
+			return writeExecUsageError(stderr, preflightErr.Error())
+		}
+		targetRemote = firstNonEmptyString(options.remote, remoteForCheck)
 	}
-
-	targetRemote := firstNonEmptyString(options.remote, remoteForCheck)
 	if deps.isUnbornRemote != nil {
 		if unborn, unbornErr := deps.isUnbornRemote(context.Background(), workspaceRoot, targetRemote); unbornErr == nil && unborn {
 			return writeExecUsageError(stderr, fmt.Sprintf("cannot create pull request on unborn remote %s: push the initial default branch first", targetRemote))
@@ -1083,12 +1089,21 @@ func ensureFeatureBranch(ctx context.Context, stdout io.Writer, jsonMode bool, w
 		return "", "", false, err
 	}
 	if !isDefault {
-		requireNewRemoteBranch := false
-		if deps.branchHasUpstream != nil && deps.isGeneratedBranch != nil {
-			hasUpstream, upstreamErr := deps.branchHasUpstream(ctx, workspaceRoot, currentBranch)
-			isGenerated := deps.isGeneratedBranch(ctx, workspaceRoot, currentBranch)
-			requireNewRemoteBranch = isGenerated && (upstreamErr != nil || !hasUpstream)
-		}
+		// Resolve the effective push remote for this invocation (same
+			// precedence as Push itself: explicit --remote, branch config, origin).
+			effectiveRemote := firstNonEmptyString(requestedRemote, remote)
+			requireNewRemoteBranch := false
+			if deps.branchHasUpstream != nil && deps.isGeneratedBranch != nil {
+				hasUpstream, upstreamErr := deps.branchHasUpstream(ctx, workspaceRoot, currentBranch)
+				isGenerated := deps.isGeneratedBranch(ctx, workspaceRoot, currentBranch)
+				// Always require a new-branch lease when the push target remote
+				// differs from the branch's configured upstream (or when there is
+				// no upstream at all). Without this, a generated branch pushed
+				// to one remote can silently fast-forward a stale copy on a
+				// different remote that was never checked.
+				pushTargetDiffers := hasUpstream && upstreamErr == nil && effectiveRemote != "" && effectiveRemote != remote
+				requireNewRemoteBranch = isGenerated && (upstreamErr != nil || !hasUpstream || pushTargetDiffers)
+			}
 		return currentBranch, remote, requireNewRemoteBranch, nil
 	}
 
