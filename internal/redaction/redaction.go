@@ -137,7 +137,7 @@ var plainOpenaiKeyPattern = regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{20,}`)
 // without stripping those bytes out of the subject first.
 type secretShape struct {
 	textPattern  *regexp.Regexp
-	plainPattern *regexp.Regexp
+	plainPattern interface{ MatchString(string) bool }
 	minLen       int
 	requireDots  bool
 }
@@ -542,13 +542,27 @@ func extractSpansFromMatch(src string, matchStart, matchEnd int, shape secretSha
 	runningDigits := 0
 	hasInteriorHyphen := false
 	lastConsumedEnd := 0
+	validatedStart := -1
+	validCandidate := func(logEnd int) bool {
+		// The specialized patterns have no end assertions: once a prefix
+		// matches, extending that same candidate cannot invalidate it. Cache
+		// by candidate start so neighboring credentials are validated afresh.
+		// OpenAI's digit-free hyphen rule is not monotonic and stays uncached.
+		if !isOpenAI && validatedStart == candStartLog {
+			return true
+		}
+		valid := isCandidateValid(cand.logical[candStartLog:logEnd], shape, isOpenAI, runningDots, runningDigits, hasInteriorHyphen)
+		if valid && !isOpenAI {
+			validatedStart = candStartLog
+		}
+		return valid
+	}
 
 	checkCandidate := func(logEnd int) bool {
 		if logEnd <= candStartLog {
 			return false
 		}
-		logPre := cand.logical[candStartLog:logEnd]
-		valid := isCandidateValid(logPre, shape, isOpenAI, runningDots, runningDigits, hasInteriorHyphen)
+		valid := validCandidate(logEnd)
 		if valid {
 			origEnd := cand.origEnds[logEnd-1]
 			spans = append(spans, span{
@@ -589,7 +603,7 @@ func extractSpansFromMatch(src string, matchStart, matchEnd int, shape secretSha
 		}
 
 		logPre := cand.logical[candStartLog:logCursor]
-		prefixValid := isCandidateValid(logPre, shape, isOpenAI, runningDots, runningDigits, hasInteriorHyphen)
+		prefixValid := validCandidate(logCursor)
 		tailInSrc := src[matchStart+cSpan.end:]
 		tailWindow := tailInSrc
 		if len(tailWindow) > 64 {
